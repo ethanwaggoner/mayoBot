@@ -1,5 +1,6 @@
 import io
 import json
+import math
 import os
 import re
 
@@ -7,7 +8,9 @@ import discord
 import nest_asyncio
 import PyPDF2
 import requests
+import textwrap
 from discord.ext import commands
+from discord.ext.commands import ExpectedClosingQuoteError
 from dotenv import load_dotenv
 
 from langchain import OpenAI
@@ -77,10 +80,10 @@ async def info(ctx):
                     inline=False)
     embed.add_field(name="Example Usage",
                     value="!youtube https://www.youtube.com/watch?v=y7iVTTH5tOA \n"
-                          "!Q 'What are the key takeaways from this video?' \n"
+                          "!Q What are the key takeaways from this video? \n"
                           "!upload <upload pdf to discord> \n"
-                          "!Q 'Summarize chapter 5 as if speaking to someone in middle school.'\n"
-                          "!ai 'Write a flask app using html js and css.'",
+                          "!Q Summarize chapter 5 as if speaking to someone in middle school.\n"
+                          "!ai Write a flask app using html js and css.",
                     inline=False)
     await ctx.send(embed=embed)
 
@@ -136,7 +139,7 @@ async def upload(ctx):
 
 
 @bot.command(name='Q')
-async def query_index(ctx, command):
+async def query_index(ctx, *, command):
     global index
     prompt = "Limit your response to a maximum of 1024 characters. "
     try:
@@ -166,8 +169,7 @@ async def query_index(ctx, command):
 
 
 @bot.command(name='ai')
-async def ai(ctx, command):
-    prompt = "Limit your response to a maximum of 1024 characters. "
+async def ai(ctx, *, command=None):
     headers = {
         'Content-Type': 'application/json',
         'Authorization': 'Bearer ' + api_token
@@ -175,7 +177,7 @@ async def ai(ctx, command):
     data = json.dumps({
         "model": "gpt-3.5-turbo",
         "messages": [
-            {"role": "user", "content": prompt + command}
+            {"role": "user", "content": command}
         ],
         "max_tokens": 350,
     })
@@ -197,12 +199,44 @@ async def ai(ctx, command):
 
     for sentence in sentences:
         print(sentence)
-        embed.add_field(name="Response",
-                        value=sentence,
-                        inline=False,
-                        )
-        await ctx.send(embed=embed)
-        await ctx.send(f"Query Complete {ctx.author.mention}")
-
+        if len(sentence) < 1000:
+            embed.add_field(name="Response",
+                            value=sentence,
+                            inline=False,
+                            )
+            try:
+                await ctx.send(embed=embed)
+                await ctx.send(f"Query Complete {ctx.author.mention}")
+            except ExpectedClosingQuoteError:
+                embed = discord.Embed(title="Error",
+                                      description="Error parsing prompt. Check for extra quotes",
+                                      color=discord.Color.red())
+                await ctx.send(embed=embed)
+            except discord.errors.HTTPException:
+                embed = discord.Embed(title="Error",
+                                      description="Error parsing prompt. Prompt too large",
+                                      color=discord.Color.red())
+                await ctx.send(embed=embed)
+        if len(sentence) > 999:
+            response_count = 0
+            chunk_size = int(len(sentence) / 4)
+            sentence_chunks = textwrap.wrap(sentence, chunk_size)
+            for chunk in sentence_chunks:
+                response_count += 1
+                if response_count > 4:
+                    return
+                large_embed = discord.Embed(title=f"Response Part {response_count}")
+                large_embed.add_field(name="Response", value=chunk, inline=False)
+                large_embed.set_thumbnail(url=ctx.author.avatar)
+                try:
+                    await ctx.send(embed=large_embed)
+                except discord.errors.HTTPException:
+                    embed = discord.Embed(title="Error",
+                                          description="Response too large",
+                                          color=discord.Color.red())
+                    await ctx.send(embed=embed)
+                finally:
+                    if response_count == 4:
+                        await ctx.send(f"Query Complete {ctx.author.mention}")
 
 bot.run(token)
